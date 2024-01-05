@@ -1,6 +1,6 @@
 {
    "kind": "pipeline",
-   "name": "Static (bionic amd64)",
+   "name": "Static (focal amd64)",
    "platform": {
       "arch": "amd64"
    },
@@ -37,7 +37,7 @@
                "from_secret": "SSH_KEY"
             }
          },
-         "image": "ubuntu:bionic",
+         "image": "ubuntu:focal",
          "name": "build"
       }
    ],
