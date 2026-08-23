@@ -5,6 +5,7 @@ on:
     branches: [ main, master ]
   pull_request:
     branches: [ main, master ]
+  workflow_dispatch:
 
 jobs:
   build:
@@ -40,6 +41,7 @@ jobs:
       run: |
         choco install -y cmake --installargs '"ADD_CMAKE_TO_PATH=System"'
         choco install -y ninja
+        choco install -y pkgconfiglite
 
     - name: Configure
       run: cmake -S . -B build -G Ninja -DDOWNLOAD_SODIUM=ON -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
@@ -50,12 +52,24 @@ jobs:
     - name: Run tests
       run: ctest --test-dir build --output-on-failure -C ${{ matrix.build_type }}
 
-    - name: Upload build artifact
-      if: runner.os == 'Linux' || runner.os == 'Windows'
+    - name: Package (Linux)
+      if: runner.os == 'Linux'
+      run: |
+        mkdir -p artifact
+        tar -C build/httpserver -cJf artifact/beldex-storage-linux-${{ matrix.build_type }}.tar.xz beldex-storage
+
+    - name: Package (Windows)
+      if: runner.os == 'Windows'
+      shell: powershell
+      run: |
+        New-Item -ItemType Directory -Path artifact -Force
+        Compress-Archive -Path build/httpserver/* -DestinationPath artifact\beldex-storage-windows-${{ matrix.build_type }}.zip
+
+    - name: Upload packaged artifact
       uses: actions/upload-artifact@v4
       with:
         name: beldex-storage
-        path: build/httpserver/**
+        path: artifact/**
 
   deploy:
     name: Build and deploy
@@ -80,5 +94,5 @@ jobs:
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           port: ${{ secrets.DEPLOY_PORT }}
-          source: ./artifact/build/httpserver/*
+          source: ./artifact/*
           target: ${{ secrets.DEPLOY_PATH }}
