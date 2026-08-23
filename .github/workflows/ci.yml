@@ -30,7 +30,7 @@ jobs:
       run: |
         sudo apt-get update
         sudo apt-get install -y build-essential cmake ninja-build pkg-config \
-          libssl-dev libboost-all-dev libjemalloc-dev libsystemd-dev
+          libssl-dev libboost-all-dev libjemalloc-dev libsystemd-dev libsodium-dev
 
     # macOS build removed; macOS-specific install step deleted
 
@@ -42,7 +42,7 @@ jobs:
         choco install -y ninja
 
     - name: Configure
-      run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
+      run: cmake -S . -B build -G Ninja -DDOWNLOAD_SODIUM=ON -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
 
     - name: Build
       run: cmake --build build --config ${{ matrix.build_type }} -- -j
