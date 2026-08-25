@@ -68,7 +68,7 @@ jobs:
       run: cmake -S . -B build -G Ninja -DDOWNLOAD_SODIUM=ON -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
 
     - name: Build
-      run: cmake --build build --config ${{ matrix.build_type }} -- -j
+      run: cmake --build build --config ${{ matrix.build_type }} -- -j2
 
     - name: Run tests
       run: ctest --test-dir build --output-on-failure -C ${{ matrix.build_type }}
