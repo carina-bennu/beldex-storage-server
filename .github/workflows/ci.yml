@@ -12,7 +12,6 @@ on:
 jobs:
   build:
     name: Build and test (${{ matrix.os }})
-
     runs-on: ${{ matrix.os }}
 
     strategy:
@@ -21,6 +20,9 @@ jobs:
         build_type: [Release]
 
     steps:
+      # -------------------------
+      # Checkout
+      # -------------------------
       - name: Checkout
         uses: actions/checkout@v4
         with:
@@ -35,6 +37,7 @@ jobs:
       # -------------------------
       - name: Install dependencies (Linux)
         if: runner.os == 'Linux'
+        shell: bash
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -50,8 +53,12 @@ jobs:
             libsystemd-dev \
             libsodium-dev
 
+      # -------------------------
+      # Check CURL
+      # -------------------------
       - name: Check CURL
         if: runner.os == 'Linux'
+        shell: bash
         run: |
           echo "=== curl ==="
           curl --version
@@ -74,9 +81,22 @@ jobs:
           choco install -y pkgconfiglite
 
       # -------------------------
-      # Configure
+      # Configure - Linux
       # -------------------------
-      - name: Configure
+      - name: Configure (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DDOWNLOAD_SODIUM=ON \
+            -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
+
+      # -------------------------
+      # Configure - Windows
+      # -------------------------
+      - name: Configure (Windows)
+        if: runner.os == 'Windows'
+        shell: powershell
         run: |
           cmake -S . -B build -G Ninja `
             -DDOWNLOAD_SODIUM=ON `
@@ -135,30 +155,41 @@ jobs:
 
   deploy:
     name: Build and deploy
-
     needs: build
-
     runs-on: ubuntu-latest
 
     if: github.ref == 'refs/heads/main'
 
     steps:
+      # -------------------------
+      # Checkout
+      # -------------------------
       - name: Checkout
         uses: actions/checkout@v4
         with:
           submodules: recursive
 
+      # -------------------------
+      # Download Linux artifact
+      # -------------------------
       - name: Download Linux build artifact
         uses: actions/download-artifact@v4
         with:
           name: beldex-storage-ubuntu-latest
           path: ./artifact
 
+      # -------------------------
+      # Show artifact
+      # -------------------------
       - name: Show downloaded artifact
+        shell: bash
         run: |
           echo "=== Artifact contents ==="
           find ./artifact -type f -ls
 
+      # -------------------------
+      # Deploy via SCP
+      # -------------------------
       - name: Deploy via SCP
         uses: appleboy/scp-action@v1
         with:
