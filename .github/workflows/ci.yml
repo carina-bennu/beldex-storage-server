@@ -1,201 +1,280 @@
-name: CI
+name: Beldex Storage Server - Static Linux Build
 
 on:
   push:
     branches: [main, master]
-
   pull_request:
     branches: [main, master]
-
   workflow_dispatch:
 
 jobs:
   build:
-    name: Build and test (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
+    name: Build static Linux AMD64
+    runs-on: ubuntu-22.04
 
-    strategy:
-      matrix:
-        os: [ubuntu-latest, windows-latest]
-        build_type: [Release]
+    container:
+      image: ubuntu:focal
 
     steps:
-      # -------------------------
-      # Checkout
-      # -------------------------
+      # ---------------------------------------------------------
+      # Checkout repository + submodules
+      # ---------------------------------------------------------
       - name: Checkout
         uses: actions/checkout@v4
         with:
           submodules: recursive
           fetch-depth: 0
 
-      - name: Update submodules
-        run: git submodule update --init --recursive
-
-      # -------------------------
-      # Linux dependencies
-      # -------------------------
-      - name: Install dependencies (Linux)
-        if: runner.os == 'Linux'
-        shell: bash
+      - name: Initialize submodules
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
+          git fetch --tags
+          git submodule update --init --recursive --depth=1 --jobs=4
+
+      # ---------------------------------------------------------
+      # Basic environment
+      # ---------------------------------------------------------
+      - name: Prepare environment
+        run: |
+          export DEBIAN_FRONTEND=noninteractive
+
+          echo "Building on GitHub Actions"
+          echo "Ubuntu:"
+          cat /etc/os-release
+
+          echo "man-db man-db/auto-update boolean false" | debconf-set-selections
+
+          apt-get -o=Dpkg::Use-Pty=0 -q update
+
+          apt-get -o=Dpkg::Use-Pty=0 -q install -y \
+            eatmydata \
+            wget \
+            software-properties-common
+
+          eatmydata apt-get \
+            -o=Dpkg::Use-Pty=0 \
+            -q dist-upgrade -y
+
+      # ---------------------------------------------------------
+      # GCC 10
+      # ---------------------------------------------------------
+      - name: Install GCC 10 and build dependencies
+        run: |
+          export DEBIAN_FRONTEND=noninteractive
+
+          add-apt-repository -y ppa:ubuntu-toolchain-r/test
+
+          apt-get -o=Dpkg::Use-Pty=0 -q update
+
+          eatmydata apt-get \
+            -o=Dpkg::Use-Pty=0 \
+            -q install -y \
+            --no-install-recommends \
             build-essential \
-            cmake \
+            git \
+            ca-certificates \
             ninja-build \
+            ccache \
+            autoconf \
+            automake \
+            file \
+            libtool \
+            make \
+            openssh-client \
+            patch \
             pkg-config \
-            curl \
-            libcurl4-openssl-dev \
-            libssl-dev \
-            libboost-all-dev \
-            libjemalloc-dev \
-            libsystemd-dev \
-            libsodium-dev
+            gcc-10 \
+            g++-10
 
-      # -------------------------
-      # Check CURL
-      # -------------------------
-      - name: Check CURL
-        if: runner.os == 'Linux'
-        shell: bash
+      # ---------------------------------------------------------
+      # Make GCC 10 the default compiler
+      # ---------------------------------------------------------
+      - name: Configure GCC 10
         run: |
-          echo "=== curl ==="
-          curl --version
+          update-alternatives \
+            --install /usr/bin/gcc gcc /usr/bin/gcc-10 100
 
-          echo "=== libcurl version ==="
-          pkg-config --modversion libcurl
+          update-alternatives \
+            --install /usr/bin/g++ g++ /usr/bin/g++-10 100
 
-          echo "=== libcurl flags ==="
-          pkg-config --cflags --libs libcurl
+          gcc --version
+          g++ --version
 
-      # -------------------------
-      # Windows dependencies
-      # -------------------------
-      - name: Install dependencies (Windows)
-        if: runner.os == 'Windows'
-        shell: powershell
+      # ---------------------------------------------------------
+      # Install CMake 3.27.8
+      # ---------------------------------------------------------
+      - name: Install CMake 3.27.8
         run: |
-          choco install -y cmake --installargs '"ADD_CMAKE_TO_PATH=System"'
-          choco install -y ninja
-          choco install -y pkgconfiglite
+          wget -q \
+            https://github.com/Kitware/CMake/releases/download/v3.27.8/cmake-3.27.8-linux-x86_64.sh
 
-      # -------------------------
-      # Configure - Linux
-      # -------------------------
-      - name: Configure (Linux)
-        if: runner.os == 'Linux'
-        shell: bash
+          sh cmake-3.27.8-linux-x86_64.sh \
+            --skip-license \
+            --prefix=/usr/local
+
+          cmake --version
+
+      # ---------------------------------------------------------
+      # Configure
+      # ---------------------------------------------------------
+      - name: Configure build
         run: |
-          cmake -S . -B build -G Ninja \
-            -DDOWNLOAD_SODIUM=ON \
-            -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
+          mkdir -p build
+          cd build
 
-      # -------------------------
-      # Configure - Windows
-      # -------------------------
-      - name: Configure (Windows)
-        if: runner.os == 'Windows'
-        shell: powershell
-        run: |
-          cmake -S . -B build -G Ninja `
-            -DDOWNLOAD_SODIUM=ON `
-            -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
+          cmake .. \
+            -G Ninja \
+            -DCMAKE_CXX_STANDARD=20 \
+            -DCMAKE_CXX_STANDARD_REQUIRED=ON \
+            -DCMAKE_CXX_EXTENSIONS=OFF \
+            -DCMAKE_CXX_FLAGS="-fdiagnostics-color=always" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DLOCAL_MIRROR=https://oxen.rocks/deps \
+            -DUSE_LTO=ON \
+            -DBUILD_TESTS=OFF \
+            -DBUILD_STATIC_DEPS=ON
 
-      # -------------------------
+      # ---------------------------------------------------------
       # Build
-      # -------------------------
+      # ---------------------------------------------------------
       - name: Build
-        run: cmake --build build --config ${{ matrix.build_type }} -- -j2
-
-      # -------------------------
-      # Tests
-      # -------------------------
-      - name: Run tests
-        run: ctest --test-dir build --output-on-failure -C ${{ matrix.build_type }}
-
-      # -------------------------
-      # Package Linux
-      # -------------------------
-      - name: Package (Linux)
-        if: runner.os == 'Linux'
-        shell: bash
         run: |
-          mkdir -p artifact
+          cd build
+          ninja -v
 
-          tar -C build/httpserver \
-            -cJf artifact/beldex-storage-linux-${{ matrix.build_type }}.tar.xz \
-            beldex-storage
-
-      # -------------------------
-      # Package Windows
-      # -------------------------
-      - name: Package (Windows)
-        if: runner.os == 'Windows'
-        shell: powershell
+      # ---------------------------------------------------------
+      # Check executable
+      # ---------------------------------------------------------
+      - name: Check beldex-storage
         run: |
-          New-Item -ItemType Directory -Path artifact -Force
+          ./build/httpserver/beldex-storage --version
 
-          Compress-Archive `
-            -Path build/httpserver/* `
-            -DestinationPath artifact\beldex-storage-windows-${{ matrix.build_type }}.zip
+      # ---------------------------------------------------------
+      # Run unit test
+      # ---------------------------------------------------------
+      - name: Run unit tests
+        run: |
+          ./build/unit_test/Test
 
-      # -------------------------
-      # Upload artifact
-      # -------------------------
+      # ---------------------------------------------------------
+      # Strip binary
+      # ---------------------------------------------------------
+      - name: Strip binaries
+        run: |
+          cd build
+          ninja strip
+
+      # ---------------------------------------------------------
+      # Create tar.xz package
+      # ---------------------------------------------------------
+      - name: Create tar.xz package
+        run: |
+          cd build
+          ninja create_tarxz
+
+      # ---------------------------------------------------------
+      # Show generated files
+      # ---------------------------------------------------------
+      - name: Show build artifacts
+        run: |
+          echo "===== Build files ====="
+          find build -maxdepth 3 -type f | sort
+
+          echo "===== tar.xz files ====="
+          find . -type f -name "*.tar.xz" -print
+
+          echo "===== beldex-storage ====="
+          ls -lh build/httpserver/beldex-storage
+
+      # ---------------------------------------------------------
+      # Upload artifact to GitHub
+      # ---------------------------------------------------------
       - name: Upload packaged artifact
         uses: actions/upload-artifact@v4
         with:
-          name: beldex-storage-${{ matrix.os }}
-          path: artifact/**
+          name: beldex-storage-linux-amd64
+          path: |
+            build/**/*.tar.xz
+            build/*.tar.xz
+          if-no-files-found: error
 
-  # ============================================================
+  # =============================================================
   # DEPLOY
-  # ============================================================
-
+  # =============================================================
   deploy:
-    name: Build and deploy
+    name: Deploy to server
     needs: build
     runs-on: ubuntu-latest
 
-    if: github.ref == 'refs/heads/main'
+    # Deploy only when pushing to main/master
+    if: |
+      github.event_name == 'push' &&
+      (github.ref == 'refs/heads/main' ||
+       github.ref == 'refs/heads/master')
 
     steps:
-      # -------------------------
-      # Checkout
-      # -------------------------
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          submodules: recursive
 
-      # -------------------------
-      # Download Linux artifact
-      # -------------------------
-      - name: Download Linux build artifact
+      # ---------------------------------------------------------
+      # Download artifact from build job
+      # ---------------------------------------------------------
+      - name: Download build artifact
         uses: actions/download-artifact@v4
         with:
-          name: beldex-storage-ubuntu-latest
-          path: ./artifact
+          name: beldex-storage-linux-amd64
+          path: artifact
 
-      # -------------------------
+      # ---------------------------------------------------------
       # Show artifact
-      # -------------------------
+      # ---------------------------------------------------------
       - name: Show downloaded artifact
-        shell: bash
         run: |
-          echo "=== Artifact contents ==="
-          find ./artifact -type f -ls
+          echo "Downloaded files:"
+          find artifact -type f -ls
 
-      # -------------------------
-      # Deploy via SCP
-      # -------------------------
-      - name: Deploy via SCP
-        uses: appleboy/scp-action@v1
-        with:
-          host: ${{ secrets.DEPLOY_HOST }}
-          username: ${{ secrets.DEPLOY_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          port: ${{ secrets.DEPLOY_PORT }}
-          source: "artifact/*"
-          target: ${{ secrets.DEPLOY_PATH }}
+      # ---------------------------------------------------------
+      # Configure SSH
+      # ---------------------------------------------------------
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+
+          ssh-keyscan -p "${{ secrets.DEPLOY_PORT }}" \
+            "${{ secrets.DEPLOY_HOST }}" >> ~/.ssh/known_hosts
+
+          chmod 644 ~/.ssh/known_hosts
+
+      # ---------------------------------------------------------
+      # Create deployment directory
+      # ---------------------------------------------------------
+      - name: Create remote directory
+        run: |
+          ssh \
+            -i ~/.ssh/deploy_key \
+            -p "${{ secrets.DEPLOY_PORT }}" \
+            "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}" \
+            "mkdir -p '${{ secrets.DEPLOY_PATH }}'"
+
+      # ---------------------------------------------------------
+      # Upload package
+      # ---------------------------------------------------------
+      - name: Deploy package
+        run: |
+          scp \
+            -i ~/.ssh/deploy_key \
+            -P "${{ secrets.DEPLOY_PORT }}" \
+            artifact/*.tar.xz \
+            "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}:${{ secrets.DEPLOY_PATH }}/"
+
+      # ---------------------------------------------------------
+      # Verify deployment
+      # ---------------------------------------------------------
+      - name: Verify deployment
+        run: |
+          ssh \
+            -i ~/.ssh/deploy_key \
+            -p "${{ secrets.DEPLOY_PORT }}" \
+            "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}" \
+            "ls -lh '${{ secrets.DEPLOY_PATH }}'"
