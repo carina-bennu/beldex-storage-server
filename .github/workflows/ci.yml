@@ -1,4 +1,4 @@
-name: Beldex Storage Server - Static Linux Build
+name: Storage-server-build
 
 on:
   push:
@@ -8,63 +8,45 @@ on:
   workflow_dispatch:
 
 jobs:
-  build:
+  build-static-linux:
     name: Build static Linux AMD64
     runs-on: ubuntu-22.04
 
     steps:
-      # ---------------------------------------------------------
-      # Checkout repository + submodules
-      # ---------------------------------------------------------
       - name: Checkout
         uses: actions/checkout@v4
         with:
+          submodules: recursive
           fetch-depth: 0
 
       - name: Initialize submodules
         run: |
-          git fetch --tags
           git submodule update --init --recursive --depth=1 --jobs=4
 
-      # ---------------------------------------------------------
-      # Basic environment
-      # ---------------------------------------------------------
       - name: Prepare environment
         run: |
           export DEBIAN_FRONTEND=noninteractive
 
-          echo "Building on GitHub Actions"
-          echo "Ubuntu:"
-          cat /etc/os-release
+          echo "man-db man-db/auto-update boolean false" | sudo debconf-set-selections
 
-          echo "man-db man-db/auto-update boolean false" | debconf-set-selections
-
-          apt-get -o=Dpkg::Use-Pty=0 -q update
-
-          apt-get -o=Dpkg::Use-Pty=0 -q install -y \
-            eatmydata \
-            wget \
-            software-properties-common
-
-          eatmydata apt-get \
-            -o=Dpkg::Use-Pty=0 \
-            -q dist-upgrade -y
-
-      # ---------------------------------------------------------
-      # GCC 10
-      # ---------------------------------------------------------
       - name: Install GCC 10 and build dependencies
         run: |
           export DEBIAN_FRONTEND=noninteractive
 
-          add-apt-repository -y ppa:ubuntu-toolchain-r/test
+          sudo apt-get update
 
-          apt-get -o=Dpkg::Use-Pty=0 -q update
+          sudo apt-get install -y \
+            eatmydata \
+            wget \
+            software-properties-common
 
-          eatmydata apt-get \
-            -o=Dpkg::Use-Pty=0 \
-            -q install -y \
-            --no-install-recommends \
+          sudo eatmydata apt-get dist-upgrade -y
+
+          sudo add-apt-repository -y ppa:ubuntu-toolchain-r/test
+
+          sudo apt-get update
+
+          sudo eatmydata apt-get install -y --no-install-recommends \
             build-essential \
             git \
             ca-certificates \
@@ -81,37 +63,24 @@ jobs:
             gcc-10 \
             g++-10
 
-      # ---------------------------------------------------------
-      # Make GCC 10 the default compiler
-      # ---------------------------------------------------------
       - name: Configure GCC 10
         run: |
-          update-alternatives \
-            --install /usr/bin/gcc gcc /usr/bin/gcc-10 100
-
-          update-alternatives \
-            --install /usr/bin/g++ g++ /usr/bin/g++-10 100
+          sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-10 100
+          sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-10 100
 
           gcc --version
           g++ --version
 
-      # ---------------------------------------------------------
-      # Install CMake 3.27.8
-      # ---------------------------------------------------------
       - name: Install CMake 3.27.8
         run: |
-          wget -q \
-            https://github.com/Kitware/CMake/releases/download/v3.27.8/cmake-3.27.8-linux-x86_64.sh
+          wget -q https://github.com/Kitware/CMake/releases/download/v3.27.8/cmake-3.27.8-linux-x86_64.sh
 
-          sh cmake-3.27.8-linux-x86_64.sh \
+          sudo sh cmake-3.27.8-linux-x86_64.sh \
             --skip-license \
             --prefix=/usr/local
 
           cmake --version
 
-      # ---------------------------------------------------------
-      # Configure
-      # ---------------------------------------------------------
       - name: Configure build
         run: |
           mkdir -p build
@@ -129,148 +98,29 @@ jobs:
             -DBUILD_TESTS=OFF \
             -DBUILD_STATIC_DEPS=ON
 
-      # ---------------------------------------------------------
-      # Build
-      # ---------------------------------------------------------
       - name: Build
         run: |
           cd build
           ninja -v
 
-      # ---------------------------------------------------------
-      # Check executable
-      # ---------------------------------------------------------
       - name: Check beldex-storage
         run: |
           ./build/httpserver/beldex-storage --version
 
-      # ---------------------------------------------------------
-      # Run unit test
-      # ---------------------------------------------------------
-      - name: Run unit tests
-        run: |
-          ./build/unit_test/Test
-
-      # ---------------------------------------------------------
-      # Strip binary
-      # ---------------------------------------------------------
       - name: Strip binaries
         run: |
           cd build
           ninja strip
 
-      # ---------------------------------------------------------
-      # Create tar.xz package
-      # ---------------------------------------------------------
-      - name: Create tar.xz package
+      - name: Create package
         run: |
           cd build
           ninja create_tarxz
 
-      # ---------------------------------------------------------
-      # Show generated files
-      # ---------------------------------------------------------
-      - name: Show build artifacts
-        run: |
-          echo "===== Build files ====="
-          find build -maxdepth 3 -type f | sort
-
-          echo "===== tar.xz files ====="
-          find . -type f -name "*.tar.xz" -print
-
-          echo "===== beldex-storage ====="
-          ls -lh build/httpserver/beldex-storage
-
-      # ---------------------------------------------------------
-      # Upload artifact to GitHub
-      # ---------------------------------------------------------
-      - name: Upload packaged artifact
+      - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
           name: beldex-storage-linux-amd64
           path: |
             build/**/*.tar.xz
-            build/*.tar.xz
-          if-no-files-found: error
-
-  # =============================================================
-  # DEPLOY
-  # =============================================================
-  deploy:
-    name: Deploy to server
-    needs: build
-    runs-on: ubuntu-latest
-
-    # Deploy only when pushing to main/master
-    if: |
-      github.event_name == 'push' &&
-      (github.ref == 'refs/heads/main' ||
-       github.ref == 'refs/heads/master')
-
-    steps:
-
-      # ---------------------------------------------------------
-      # Download artifact from build job
-      # ---------------------------------------------------------
-      - name: Download build artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: beldex-storage-linux-amd64
-          path: artifact
-
-      # ---------------------------------------------------------
-      # Show artifact
-      # ---------------------------------------------------------
-      - name: Show downloaded artifact
-        run: |
-          echo "Downloaded files:"
-          find artifact -type f -ls
-
-      # ---------------------------------------------------------
-      # Configure SSH
-      # ---------------------------------------------------------
-      - name: Configure SSH
-        run: |
-          mkdir -p ~/.ssh
-          chmod 700 ~/.ssh
-
-          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
-          chmod 600 ~/.ssh/deploy_key
-
-          ssh-keyscan -p "${{ secrets.DEPLOY_PORT }}" \
-            "${{ secrets.DEPLOY_HOST }}" >> ~/.ssh/known_hosts
-
-          chmod 644 ~/.ssh/known_hosts
-
-      # ---------------------------------------------------------
-      # Create deployment directory
-      # ---------------------------------------------------------
-      - name: Create remote directory
-        run: |
-          ssh \
-            -i ~/.ssh/deploy_key \
-            -p "${{ secrets.DEPLOY_PORT }}" \
-            "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}" \
-            "mkdir -p '${{ secrets.DEPLOY_PATH }}'"
-
-      # ---------------------------------------------------------
-      # Upload package
-      # ---------------------------------------------------------
-      - name: Deploy package
-        run: |
-          scp \
-            -i ~/.ssh/deploy_key \
-            -P "${{ secrets.DEPLOY_PORT }}" \
-            artifact/*.tar.xz \
-            "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}:${{ secrets.DEPLOY_PATH }}/"
-
-      # ---------------------------------------------------------
-      # Verify deployment
-      # ---------------------------------------------------------
-      - name: Verify deployment
-        run: |
-          ssh \
-            -i ~/.ssh/deploy_key \
-            -p "${{ secrets.DEPLOY_PORT }}" \
-            "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}" \
-            "ls -lh '${{ secrets.DEPLOY_PATH }}'"
+            build/httpserver/beldex-storage
