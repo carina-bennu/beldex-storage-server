@@ -61,8 +61,7 @@ jobs:
             patch \
             pkg-config \
             gcc-10 \
-            g++-10 \
-            libzstd-dev
+            g++-10
 
       - name: Configure GCC 10
         run: |
@@ -82,7 +81,7 @@ jobs:
 
           cmake --version
 
-      - name: Patch static curl ZSTD dependency
+      - name: Patch curl to disable ZSTD
         run: |
           python3 - <<'PY'
           from pathlib import Path
@@ -90,31 +89,24 @@ jobs:
           path = Path("cmake/StaticBuild.cmake")
           text = path.read_text()
 
-          old = 'set(libcurl_link_libs OpenSSL::SSL zlib)'
-          new = 'set(libcurl_link_libs OpenSSL::SSL zlib -lzstd)'
+          old = "--without-zsh-functions-dir --without-fish-functions-dir"
+          new = "--without-zsh-functions-dir --without-fish-functions-dir --without-zstd"
 
-          if old not in text:
+          if "--without-zstd" in text:
+              print("ZSTD is already disabled in curl configuration.")
+          elif old in text:
+              text = text.replace(old, new, 1)
+              path.write_text(text)
+              print("Added --without-zstd to curl configuration.")
+          else:
               raise SystemExit(
-                  "Could not find expected libcurl dependency line in "
-                  "cmake/StaticBuild.cmake"
+                  "Could not find the expected curl configuration line "
+                  "in cmake/StaticBuild.cmake"
               )
-
-          text = text.replace(old, new, 1)
-          path.write_text(text)
-
-          print("Patched cmake/StaticBuild.cmake:")
-          print("  " + new)
           PY
 
-      - name: Verify ZSTD static library
-        run: |
-          echo "Checking for static ZSTD library..."
-
-          dpkg -L libzstd-dev | grep -E '/libzstd\.a$'
-
-          echo
-          echo "ZSTD version:"
-          zstd --version || true
+          echo "Checking curl ZSTD configuration:"
+          grep -n -A3 -B3 "without-zstd" cmake/StaticBuild.cmake
 
       - name: Configure build
         run: |
