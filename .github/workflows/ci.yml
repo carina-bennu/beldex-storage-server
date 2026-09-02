@@ -61,7 +61,8 @@ jobs:
             patch \
             pkg-config \
             gcc-10 \
-            g++-10
+            g++-10 \
+            libzstd-dev
 
       - name: Configure GCC 10
         run: |
@@ -81,9 +82,42 @@ jobs:
 
           cmake --version
 
+      - name: Patch static curl ZSTD dependency
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("cmake/StaticBuild.cmake")
+          text = path.read_text()
+
+          old = 'set(libcurl_link_libs OpenSSL::SSL zlib)'
+          new = 'set(libcurl_link_libs OpenSSL::SSL zlib -lzstd)'
+
+          if old not in text:
+              raise SystemExit(
+                  "Could not find expected libcurl dependency line in "
+                  "cmake/StaticBuild.cmake"
+              )
+
+          text = text.replace(old, new, 1)
+          path.write_text(text)
+
+          print("Patched cmake/StaticBuild.cmake:")
+          print("  " + new)
+          PY
+
+      - name: Verify ZSTD static library
+        run: |
+          echo "Checking for static ZSTD library..."
+
+          dpkg -L libzstd-dev | grep -E '/libzstd\.a$'
+
+          echo
+          echo "ZSTD version:"
+          zstd --version || true
+
       - name: Configure build
         run: |
-          # Remove any previous build directory and CMake cache
           rm -rf build
 
           mkdir -p build
