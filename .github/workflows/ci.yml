@@ -21,7 +21,7 @@ jobs:
     steps:
 
       # ============================================================
-      # Checkout
+      # CHECKOUT
       # ============================================================
 
       - name: Checkout
@@ -32,20 +32,34 @@ jobs:
 
       - name: Initialize submodules
         run: |
+          set -e
+
           git fetch --tags
-          git submodule update --init --recursive --depth=1 --jobs=4
+
+          git submodule update \
+            --init \
+            --recursive \
+            --depth=1 \
+            --jobs=4
 
 
       # ============================================================
-      # Build inside Ubuntu 20.04 / Focal
+      # BUILD INSIDE UBUNTU 20.04
+      #
+      # This matches the original Drone:
+      #   image: ubuntu:focal
+      #
+      # Checkout happens outside Docker so GitHub Actions
+      # can correctly handle submodules.
       # ============================================================
 
-      - name: Build in Ubuntu 20.04 container
+      - name: Build in Ubuntu 20.04
+        shell: bash
         run: |
           set -e
 
           docker run --rm \
-            -v "$GITHUB_WORKSPACE:/workspace" \
+            -v "${GITHUB_WORKSPACE}:/workspace" \
             -w /workspace \
             ubuntu:20.04 \
             bash -c '
@@ -54,20 +68,38 @@ jobs:
 
               export DEBIAN_FRONTEND=noninteractive
 
-              echo "=============================================="
-              echo "Build environment"
-              echo "=============================================="
+              echo "================================================"
+              echo "BUILD ENVIRONMENT"
+              echo "================================================"
 
               cat /etc/os-release
-              uname -m
 
               echo ""
-              echo "=============================================="
-              echo "Install dependencies"
-              echo "=============================================="
+              echo "Architecture:"
+              uname -m
+
+
+              # ==================================================
+              # PREPARE ENVIRONMENT
+              # ==================================================
+
+              echo ""
+              echo "================================================"
+              echo "PREPARE ENVIRONMENT"
+              echo "================================================"
 
               echo "man-db man-db/auto-update boolean false" \
                 | debconf-set-selections
+
+
+              # ==================================================
+              # INSTALL DEPENDENCIES
+              # ==================================================
+
+              echo ""
+              echo "================================================"
+              echo "INSTALL DEPENDENCIES"
+              echo "================================================"
 
               apt-get update
 
@@ -78,11 +110,13 @@ jobs:
 
               eatmydata apt-get dist-upgrade -y
 
-              add-apt-repository -y ppa:ubuntu-toolchain-r/test
+              add-apt-repository -y \
+                ppa:ubuntu-toolchain-r/test
 
               apt-get update
 
-              eatmydata apt-get install -y --no-install-recommends \
+              eatmydata apt-get install -y \
+                --no-install-recommends \
                 build-essential \
                 git \
                 ca-certificates \
@@ -100,24 +134,52 @@ jobs:
                 g++-10 \
                 python3
 
+
+              # ==================================================
+              # GCC 10
+              # ==================================================
+
               echo ""
-              echo "=============================================="
-              echo "Configure GCC 10"
-              echo "=============================================="
+              echo "================================================"
+              echo "CONFIGURE GCC 10"
+              echo "================================================"
 
               update-alternatives \
-                --install /usr/bin/gcc gcc /usr/bin/gcc-10 100
+                --install \
+                /usr/bin/gcc \
+                gcc \
+                /usr/bin/gcc-10 \
+                100
 
               update-alternatives \
-                --install /usr/bin/g++ g++ /usr/bin/g++-10 100
+                --install \
+                /usr/bin/g++ \
+                g++ \
+                /usr/bin/g++-10 \
+                100
 
+              echo ""
+              echo "GCC:"
               gcc --version
+
+              echo ""
+              echo "G++:"
               g++ --version
 
               echo ""
-              echo "=============================================="
-              echo "Install CMake"
-              echo "=============================================="
+              echo "Compiler paths:"
+              which gcc
+              which g++
+
+
+              # ==================================================
+              # INSTALL CMAKE 3.27.8
+              # ==================================================
+
+              echo ""
+              echo "================================================"
+              echo "INSTALL CMAKE 3.27.8"
+              echo "================================================"
 
               cd /workspace
 
@@ -130,18 +192,23 @@ jobs:
 
               cmake --version
 
+
+              # ==================================================
+              # PATCH CURL
+              # ==================================================
+
               echo ""
-              echo "=============================================="
-              echo "Patch curl"
-              echo "=============================================="
+              echo "================================================"
+              echo "PATCH CURL"
+              echo "================================================"
 
               python3 - <<PY
           from pathlib import Path
 
-          path = Path("cmake/StaticBuild.cmake")
+          path = Path("/workspace/cmake/StaticBuild.cmake")
 
           if not path.exists():
-              print("cmake/StaticBuild.cmake not found.")
+              print("ERROR: cmake/StaticBuild.cmake not found")
               raise SystemExit(1)
 
           text = path.read_text()
@@ -164,28 +231,36 @@ jobs:
 
           else:
               raise SystemExit(
-                  "Could not find expected curl configuration line."
+                  "Could not find expected curl configuration line "
+                  "in cmake/StaticBuild.cmake"
               )
           PY
 
+              echo ""
+              echo "Curl configuration:"
               grep -n -A3 -B3 \
                 "without-zstd" \
-                cmake/StaticBuild.cmake
+                /workspace/cmake/StaticBuild.cmake
+
+
+              # ==================================================
+              # CONFIGURE BUILD
+              # ==================================================
 
               echo ""
-              echo "=============================================="
-              echo "Configure build"
-              echo "=============================================="
+              echo "================================================"
+              echo "CONFIGURE BUILD"
+              echo "================================================"
 
-              rm -rf build
+              rm -rf /workspace/build
 
-              mkdir -p build
+              mkdir -p /workspace/build
 
-              cd build
+              cd /workspace/build
 
               CC=/usr/bin/gcc-10 \
               CXX=/usr/bin/g++-10 \
-              cmake .. \
+              cmake /workspace \
                 -G Ninja \
                 -DCMAKE_CXX_STANDARD=20 \
                 -DCMAKE_CXX_STANDARD_REQUIRED=ON \
@@ -198,90 +273,224 @@ jobs:
                 -DBUILD_TESTS=OFF \
                 -DBUILD_STATIC_DEPS=ON
 
+
+              # ==================================================
+              # BUILD
+              # ==================================================
+
               echo ""
-              echo "=============================================="
-              echo "Build"
-              echo "=============================================="
+              echo "================================================"
+              echo "BUILD"
+              echo "================================================"
 
               ninja -v
 
-              echo ""
-              echo "=============================================="
-              echo "Check binary"
-              echo "=============================================="
 
-              ./httpserver/beldex-storage --version
+              # ==================================================
+              # CHECK BINARY
+              # ==================================================
 
               echo ""
-              echo "=============================================="
-              echo "Strip"
-              echo "=============================================="
+              echo "================================================"
+              echo "CHECK BINARY"
+              echo "================================================"
+
+              /workspace/build/httpserver/beldex-storage --version
+
+
+              # ==================================================
+              # CHECK BINARY DEPENDENCIES
+              # ==================================================
+
+              echo ""
+              echo "================================================"
+              echo "CHECK BINARY DEPENDENCIES"
+              echo "================================================"
+
+              echo "ldd output:"
+
+              ldd \
+                /workspace/build/httpserver/beldex-storage \
+                || true
+
+              echo ""
+              echo "GLIBC requirements:"
+
+              strings \
+                /workspace/build/httpserver/beldex-storage \
+                | grep "^GLIBC_" \
+                | sort -Vu \
+                | tail -20 \
+                || true
+
+              echo ""
+              echo "GLIBCXX requirements:"
+
+              strings \
+                /workspace/build/httpserver/beldex-storage \
+                | grep "^GLIBCXX_" \
+                | sort -Vu \
+                | tail -20 \
+                || true
+
+
+              # ==================================================
+              # STRIP
+              # ==================================================
+
+              echo ""
+              echo "================================================"
+              echo "STRIP"
+              echo "================================================"
+
+              cd /workspace/build
 
               ninja strip
 
+
+              # ==================================================
+              # CREATE PACKAGE
+              # ==================================================
+
               echo ""
-              echo "=============================================="
-              echo "Create package"
-              echo "=============================================="
+              echo "================================================"
+              echo "CREATE PACKAGE"
+              echo "================================================"
 
               ninja create_tarxz
 
-              echo ""
-              echo "=============================================="
-              echo "Build output"
-              echo "=============================================="
 
-              find build \
+              # ==================================================
+              # SHOW BUILD OUTPUT
+              # ==================================================
+
+              echo ""
+              echo "================================================"
+              echo "BUILD OUTPUT"
+              echo "================================================"
+
+              echo ""
+              echo "Binary:"
+
+              ls -lh \
+                /workspace/build/httpserver/beldex-storage
+
+              echo ""
+              echo "Packages:"
+
+              find /workspace/build \
+                -maxdepth 1 \
                 -type f \
-                \( -name "beldex-storage" -o -name "*.tar.xz" \) \
+                -name "*.tar.xz" \
+                -print \
                 -exec ls -lh {} \;
 
-              echo ""
-              echo "=============================================="
-              echo "Prepare deployment"
-              echo "=============================================="
 
-              rm -rf deploy
-              mkdir -p deploy
+              # ==================================================
+              # PREPARE DEPLOYMENT FILES
+              # ==================================================
+
+              echo ""
+              echo "================================================"
+              echo "PREPARE DEPLOYMENT FILES"
+              echo "================================================"
+
+              rm -rf /workspace/deploy
+
+              mkdir -p /workspace/deploy
+
+
+              # --------------------------------------------------
+              # Copy binary
+              # --------------------------------------------------
+
+              if [ ! -f \
+                "/workspace/build/httpserver/beldex-storage"
+              ]; then
+                echo "ERROR: beldex-storage binary not found"
+                exit 1
+              fi
 
               cp \
-                build/httpserver/beldex-storage \
-                deploy/beldex-storage
+                /workspace/build/httpserver/beldex-storage \
+                /workspace/deploy/beldex-storage
 
-              PACKAGE=$(find build \
+
+              # --------------------------------------------------
+              # Find generated package
+              # --------------------------------------------------
+
+              PACKAGE=$(find /workspace/build \
+                -maxdepth 1 \
                 -type f \
                 -name "*.tar.xz" \
                 -print \
                 -quit)
 
               if [ -z "$PACKAGE" ]; then
-                echo "ERROR: No .tar.xz package found."
+                echo "ERROR: No .tar.xz package was generated."
+
+                echo ""
+                echo "Build directory contents:"
+                find /workspace/build \
+                  -maxdepth 2 \
+                  -type f \
+                  | sort
+
                 exit 1
               fi
 
-              echo "Package:"
+              echo "Package found:"
               echo "$PACKAGE"
+
+
+              # --------------------------------------------------
+              # Copy package with predictable name
+              # --------------------------------------------------
 
               cp \
                 "$PACKAGE" \
-                deploy/beldex-storage-linux-amd64.tar.xz
+                /workspace/deploy/beldex-storage-linux-amd64.tar.xz
+
+
+              # ==================================================
+              # FINAL VERIFICATION
+              # ==================================================
 
               echo ""
-              echo "Deployment files:"
+              echo "================================================"
+              echo "DEPLOYMENT FILES"
+              echo "================================================"
 
-              ls -lh deploy/
+              ls -lh /workspace/deploy/
+
+              echo ""
+              echo "Binary information:"
+
+              file \
+                /workspace/deploy/beldex-storage
+
+              echo ""
+              echo "Package information:"
+
+              file \
+                /workspace/deploy/beldex-storage-linux-amd64.tar.xz
+
             '
 
 
       # ============================================================
-      # Verify build produced files
+      # VERIFY FILES ON GITHUB RUNNER
       # ============================================================
 
       - name: Verify deployment files
+        shell: bash
         run: |
           set -e
 
-          echo "Deployment files:"
+          echo "================================================"
+          echo "VERIFY DEPLOYMENT FILES"
+          echo "================================================"
 
           ls -lh deploy/
 
@@ -289,16 +498,16 @@ jobs:
           test -f deploy/beldex-storage-linux-amd64.tar.xz
 
           echo ""
-          echo "Binary information:"
+          echo "Binary:"
           file deploy/beldex-storage
 
           echo ""
-          echo "Package information:"
+          echo "Package:"
           file deploy/beldex-storage-linux-amd64.tar.xz
 
 
       # ============================================================
-      # Upload GitHub artifact
+      # UPLOAD ARTIFACT TO GITHUB
       # ============================================================
 
       - name: Upload build artifacts
@@ -311,7 +520,10 @@ jobs:
 
 
       # ============================================================
-      # Upload to EC2
+      # UPLOAD TO EC2
+      #
+      # Pull requests do NOT deploy.
+      # Pushes to main/master and manual runs DO deploy.
       # ============================================================
 
       - name: Upload build to EC2 server
@@ -327,18 +539,23 @@ jobs:
 
 
       # ============================================================
-      # Summary
+      # DEPLOYMENT SUMMARY
       # ============================================================
 
       - name: Deployment complete
         if: github.event_name != 'pull_request'
         run: |
           echo ""
-          echo "=============================================="
-          echo "Deployment completed successfully"
-          echo "=============================================="
+          echo "================================================"
+          echo "DEPLOYMENT COMPLETED SUCCESSFULLY"
+          echo "================================================"
+
           echo ""
-          echo "Uploaded:"
+          echo "EC2:"
+          echo "${{ secrets.SERVER_HOST }}"
+
+          echo ""
+          echo "Uploaded files:"
           echo "  /home/ubuntu/beldex-storage"
           echo "  /home/ubuntu/beldex-storage-linux-amd64.tar.xz"
 
