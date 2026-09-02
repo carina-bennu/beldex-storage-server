@@ -83,6 +83,9 @@ jobs:
 
       - name: Configure build
         run: |
+          # Remove any previous build directory and CMake cache
+          rm -rf build
+
           mkdir -p build
           cd build
 
@@ -94,7 +97,7 @@ jobs:
             -DCMAKE_CXX_FLAGS="-fdiagnostics-color=always" \
             -DCMAKE_BUILD_TYPE=Release \
             -DLOCAL_MIRROR=https://oxen.rocks/deps \
-            -DUSE_LTO=ON \
+            -DUSE_LTO=OFF \
             -DBUILD_TESTS=OFF \
             -DBUILD_STATIC_DEPS=ON
 
@@ -124,3 +127,4 @@ jobs:
           path: |
             build/**/*.tar.xz
             build/httpserver/beldex-storage
+
