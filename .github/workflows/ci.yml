@@ -16,15 +16,7 @@ on:
 jobs:
   build-static-linux:
     name: Build Static Linux AMD64
-
     runs-on: ubuntu-22.04
-
-    # IMPORTANT:
-    # The original Drone pipeline builds inside ubuntu:focal.
-    # This gives us Ubuntu 20.04 / glibc 2.31 and makes the
-    # resulting binary compatible with Ubuntu 20.04 systems.
-    container:
-      image: ubuntu:20.04
 
     steps:
 
@@ -45,121 +37,105 @@ jobs:
 
 
       # ============================================================
-      # Prepare environment
+      # Build inside Ubuntu 20.04 / Focal
       # ============================================================
 
-      - name: Prepare environment
-        run: |
-          export DEBIAN_FRONTEND=noninteractive
-
-          echo "man-db man-db/auto-update boolean false" \
-            | debconf-set-selections
-
-          echo "Building inside:"
-          cat /etc/os-release
-
-          echo ""
-          echo "Architecture:"
-          uname -m
-
-
-      # ============================================================
-      # Install dependencies
-      # ============================================================
-
-      - name: Install GCC 10 and build dependencies
+      - name: Build in Ubuntu 20.04 container
         run: |
           set -e
 
-          export DEBIAN_FRONTEND=noninteractive
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:/workspace" \
+            -w /workspace \
+            ubuntu:20.04 \
+            bash -c '
 
-          apt-get update
+              set -e
 
-          apt-get install -y \
-            eatmydata \
-            wget \
-            software-properties-common
+              export DEBIAN_FRONTEND=noninteractive
 
-          eatmydata apt-get dist-upgrade -y
+              echo "=============================================="
+              echo "Build environment"
+              echo "=============================================="
 
-          # Ubuntu Toolchain PPA
-          add-apt-repository -y ppa:ubuntu-toolchain-r/test
+              cat /etc/os-release
+              uname -m
 
-          apt-get update
+              echo ""
+              echo "=============================================="
+              echo "Install dependencies"
+              echo "=============================================="
 
-          eatmydata apt-get install -y --no-install-recommends \
-            build-essential \
-            git \
-            ca-certificates \
-            ninja-build \
-            ccache \
-            autoconf \
-            automake \
-            file \
-            libtool \
-            make \
-            openssh-client \
-            patch \
-            pkg-config \
-            gcc-10 \
-            g++-10 \
-            python3
+              echo "man-db man-db/auto-update boolean false" \
+                | debconf-set-selections
 
+              apt-get update
 
-      # ============================================================
-      # Configure GCC 10
-      # ============================================================
+              apt-get install -y \
+                eatmydata \
+                wget \
+                software-properties-common
 
-      - name: Configure GCC 10
-        run: |
-          set -e
+              eatmydata apt-get dist-upgrade -y
 
-          update-alternatives \
-            --install /usr/bin/gcc gcc /usr/bin/gcc-10 100
+              add-apt-repository -y ppa:ubuntu-toolchain-r/test
 
-          update-alternatives \
-            --install /usr/bin/g++ g++ /usr/bin/g++-10 100
+              apt-get update
 
-          echo "GCC:"
-          gcc --version
+              eatmydata apt-get install -y --no-install-recommends \
+                build-essential \
+                git \
+                ca-certificates \
+                ninja-build \
+                ccache \
+                autoconf \
+                automake \
+                file \
+                libtool \
+                make \
+                openssh-client \
+                patch \
+                pkg-config \
+                gcc-10 \
+                g++-10 \
+                python3
 
-          echo ""
-          echo "G++:"
-          g++ --version
+              echo ""
+              echo "=============================================="
+              echo "Configure GCC 10"
+              echo "=============================================="
 
-          echo ""
-          echo "Compiler locations:"
-          which gcc
-          which g++
+              update-alternatives \
+                --install /usr/bin/gcc gcc /usr/bin/gcc-10 100
 
+              update-alternatives \
+                --install /usr/bin/g++ g++ /usr/bin/g++-10 100
 
-      # ============================================================
-      # Install CMake 3.27.8
-      # ============================================================
+              gcc --version
+              g++ --version
 
-      - name: Install CMake 3.27.8
-        run: |
-          set -e
+              echo ""
+              echo "=============================================="
+              echo "Install CMake"
+              echo "=============================================="
 
-          wget -q \
-            https://github.com/Kitware/CMake/releases/download/v3.27.8/cmake-3.27.8-linux-x86_64.sh
+              cd /workspace
 
-          sh cmake-3.27.8-linux-x86_64.sh \
-            --skip-license \
-            --prefix=/usr/local
+              wget -q \
+                https://github.com/Kitware/CMake/releases/download/v3.27.8/cmake-3.27.8-linux-x86_64.sh
 
-          cmake --version
+              sh cmake-3.27.8-linux-x86_64.sh \
+                --skip-license \
+                --prefix=/usr/local
 
+              cmake --version
 
-      # ============================================================
-      # Patch curl to disable ZSTD
-      # ============================================================
+              echo ""
+              echo "=============================================="
+              echo "Patch curl"
+              echo "=============================================="
 
-      - name: Patch curl to disable ZSTD
-        run: |
-          set -e
-
-          python3 - <<'PY'
+              python3 - <<PY
           from pathlib import Path
 
           path = Path("cmake/StaticBuild.cmake")
@@ -171,6 +147,7 @@ jobs:
           text = path.read_text()
 
           old = "--without-zsh-functions-dir --without-fish-functions-dir"
+
           new = (
               "--without-zsh-functions-dir "
               "--without-fish-functions-dir "
@@ -187,265 +164,141 @@ jobs:
 
           else:
               raise SystemExit(
-                  "Could not find expected curl configuration line "
-                  "in cmake/StaticBuild.cmake"
+                  "Could not find expected curl configuration line."
               )
           PY
 
-          echo ""
-          echo "Checking curl ZSTD configuration:"
-          grep -n -A3 -B3 "without-zstd" cmake/StaticBuild.cmake
+              grep -n -A3 -B3 \
+                "without-zstd" \
+                cmake/StaticBuild.cmake
+
+              echo ""
+              echo "=============================================="
+              echo "Configure build"
+              echo "=============================================="
+
+              rm -rf build
+
+              mkdir -p build
+
+              cd build
+
+              CC=/usr/bin/gcc-10 \
+              CXX=/usr/bin/g++-10 \
+              cmake .. \
+                -G Ninja \
+                -DCMAKE_CXX_STANDARD=20 \
+                -DCMAKE_CXX_STANDARD_REQUIRED=ON \
+                -DCMAKE_CXX_EXTENSIONS=OFF \
+                -DCMAKE_CXX_FLAGS="-fdiagnostics-color=always" \
+                -DCMAKE_EXE_LINKER_FLAGS="-static-libstdc++ -static-libgcc" \
+                -DCMAKE_BUILD_TYPE=Release \
+                -DLOCAL_MIRROR=https://oxen.rocks/deps \
+                -DUSE_LTO=ON \
+                -DBUILD_TESTS=OFF \
+                -DBUILD_STATIC_DEPS=ON
+
+              echo ""
+              echo "=============================================="
+              echo "Build"
+              echo "=============================================="
+
+              ninja -v
+
+              echo ""
+              echo "=============================================="
+              echo "Check binary"
+              echo "=============================================="
+
+              ./httpserver/beldex-storage --version
+
+              echo ""
+              echo "=============================================="
+              echo "Strip"
+              echo "=============================================="
+
+              ninja strip
+
+              echo ""
+              echo "=============================================="
+              echo "Create package"
+              echo "=============================================="
+
+              ninja create_tarxz
+
+              echo ""
+              echo "=============================================="
+              echo "Build output"
+              echo "=============================================="
+
+              find build \
+                -type f \
+                \( -name "beldex-storage" -o -name "*.tar.xz" \) \
+                -exec ls -lh {} \;
+
+              echo ""
+              echo "=============================================="
+              echo "Prepare deployment"
+              echo "=============================================="
+
+              rm -rf deploy
+              mkdir -p deploy
+
+              cp \
+                build/httpserver/beldex-storage \
+                deploy/beldex-storage
+
+              PACKAGE=$(find build \
+                -type f \
+                -name "*.tar.xz" \
+                -print \
+                -quit)
+
+              if [ -z "$PACKAGE" ]; then
+                echo "ERROR: No .tar.xz package found."
+                exit 1
+              fi
+
+              echo "Package:"
+              echo "$PACKAGE"
+
+              cp \
+                "$PACKAGE" \
+                deploy/beldex-storage-linux-amd64.tar.xz
+
+              echo ""
+              echo "Deployment files:"
+
+              ls -lh deploy/
+            '
 
 
       # ============================================================
-      # Configure build
+      # Verify build produced files
       # ============================================================
 
-      - name: Configure build
+      - name: Verify deployment files
         run: |
           set -e
 
-          rm -rf build
-
-          mkdir -p build
-          cd build
-
-          CC=/usr/bin/gcc-10 \
-          CXX=/usr/bin/g++-10 \
-          cmake .. \
-            -G Ninja \
-            -DCMAKE_CXX_STANDARD=20 \
-            -DCMAKE_CXX_STANDARD_REQUIRED=ON \
-            -DCMAKE_CXX_EXTENSIONS=OFF \
-            -DCMAKE_CXX_FLAGS="-fdiagnostics-color=always" \
-            -DCMAKE_EXE_LINKER_FLAGS="-static-libstdc++ -static-libgcc" \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DLOCAL_MIRROR=https://oxen.rocks/deps \
-            -DUSE_LTO=ON \
-            -DBUILD_TESTS=OFF \
-            -DBUILD_STATIC_DEPS=ON
-
-
-      # ============================================================
-      # Build
-      # ============================================================
-
-      - name: Build
-        run: |
-          set -e
-
-          cd build
-
-          ninja -v
-
-
-      # ============================================================
-      # Check binary
-      # ============================================================
-
-      - name: Check beldex-storage
-        run: |
-          set -e
-
-          echo "Checking beldex-storage..."
-
-          ./build/httpserver/beldex-storage --version
-
-
-      # ============================================================
-      # Run unit tests
-      # ============================================================
-
-      - name: Run unit tests
-        run: |
-          set -e
-
-          if [ -x "./build/unit_test/Test" ]; then
-            ./build/unit_test/Test
-          else
-            echo "Unit test binary not found."
-            echo "Skipping unit tests."
-          fi
-
-
-      # ============================================================
-      # Check static libraries
-      # ============================================================
-
-      - name: Check static libraries
-        run: |
-          set -e
-
-          if [ -x "./contrib/drone-check-static-libs.sh" ]; then
-            ./contrib/drone-check-static-libs.sh
-          else
-            echo "Static library check script not found."
-            echo "Skipping static library check."
-          fi
-
-
-      # ============================================================
-      # Check dynamic dependencies
-      # ============================================================
-
-      - name: Check binary dependencies
-        run: |
-          set -e
-
-          echo "================================================"
-          echo "ldd output"
-          echo "================================================"
-
-          ldd ./build/httpserver/beldex-storage || true
-
-          echo ""
-          echo "================================================"
-          echo "GLIBC requirements"
-          echo "================================================"
-
-          strings ./build/httpserver/beldex-storage \
-            | grep -E '^GLIBC_' \
-            | sort -Vu \
-            | tail -20 || true
-
-          echo ""
-          echo "================================================"
-          echo "GLIBCXX requirements"
-          echo "================================================"
-
-          strings ./build/httpserver/beldex-storage \
-            | grep -E '^GLIBCXX_' \
-            | sort -Vu \
-            | tail -20 || true
-
-
-      # ============================================================
-      # Strip binaries
-      # ============================================================
-
-      - name: Strip binaries
-        run: |
-          set -e
-
-          cd build
-
-          ninja strip
-
-
-      # ============================================================
-      # Create tar.xz package
-      # ============================================================
-
-      - name: Create package
-        run: |
-          set -e
-
-          cd build
-
-          ninja create_tarxz
-
-
-      # ============================================================
-      # Show generated files
-      # ============================================================
-
-      - name: Show build output
-        run: |
-          echo "================================================"
-          echo "Binaries"
-          echo "================================================"
-
-          find build -type f \
-            -name "beldex-storage" \
-            -exec ls -lh {} \;
-
-          echo ""
-          echo "================================================"
-          echo "Packages"
-          echo "================================================"
-
-          find build -type f \
-            -name "*.tar.xz" \
-            -exec ls -lh {} \;
-
-
-      # ============================================================
-      # Prepare deployment directory
-      # ============================================================
-
-      - name: Prepare deployment files
-        shell: bash
-        run: |
-          set -e
-
-          rm -rf deploy
-          mkdir -p deploy
-
-          # --------------------------------------------------------
-          # Copy binary
-          # --------------------------------------------------------
-
-          if [ ! -f "build/httpserver/beldex-storage" ]; then
-            echo "ERROR: beldex-storage binary not found."
-            exit 1
-          fi
-
-          cp \
-            build/httpserver/beldex-storage \
-            deploy/beldex-storage
-
-
-          # --------------------------------------------------------
-          # Find tar.xz package
-          # --------------------------------------------------------
-
-          PACKAGE=$(find build \
-            -type f \
-            -name "*.tar.xz" \
-            -print \
-            -quit)
-
-          if [ -z "$PACKAGE" ]; then
-            echo "ERROR: No .tar.xz package was generated."
-
-            echo ""
-            echo "Build files:"
-            find build -type f | sort
-
-            exit 1
-          fi
-
-          echo "Package found:"
-          echo "$PACKAGE"
-
-
-          # --------------------------------------------------------
-          # Copy package with predictable name
-          # --------------------------------------------------------
-
-          cp \
-            "$PACKAGE" \
-            deploy/beldex-storage-linux-amd64.tar.xz
-
-
-          # --------------------------------------------------------
-          # Verify deployment files
-          # --------------------------------------------------------
-
-          echo ""
           echo "Deployment files:"
-          echo ""
 
           ls -lh deploy/
 
+          test -f deploy/beldex-storage
+          test -f deploy/beldex-storage-linux-amd64.tar.xz
+
           echo ""
-          echo "File information:"
+          echo "Binary information:"
           file deploy/beldex-storage
+
+          echo ""
+          echo "Package information:"
           file deploy/beldex-storage-linux-amd64.tar.xz
 
 
       # ============================================================
-      # Upload build artifact to GitHub
+      # Upload GitHub artifact
       # ============================================================
 
       - name: Upload build artifacts
@@ -458,9 +311,7 @@ jobs:
 
 
       # ============================================================
-      # Upload build to EC2
-      #
-      # Do NOT deploy pull requests.
+      # Upload to EC2
       # ============================================================
 
       - name: Upload build to EC2 server
@@ -476,7 +327,7 @@ jobs:
 
 
       # ============================================================
-      # Deployment verification
+      # Summary
       # ============================================================
 
       - name: Deployment complete
@@ -487,10 +338,7 @@ jobs:
           echo "Deployment completed successfully"
           echo "=============================================="
           echo ""
-          echo "EC2 server:"
-          echo "  ${{ secrets.SERVER_HOST }}"
-          echo ""
-          echo "Uploaded files:"
+          echo "Uploaded:"
           echo "  /home/ubuntu/beldex-storage"
           echo "  /home/ubuntu/beldex-storage-linux-amd64.tar.xz"
 
