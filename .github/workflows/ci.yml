@@ -1,10 +1,16 @@
-name: Storage-server-build
+name: Storage Server Build
 
 on:
   push:
-    branches: [main, master]
+    branches:
+      - main
+      - master
+
   pull_request:
-    branches: [main, master]
+    branches:
+      - main
+      - master
+
   workflow_dispatch:
 
 jobs:
@@ -13,6 +19,9 @@ jobs:
     runs-on: ubuntu-22.04
 
     steps:
+      # ------------------------------------------------------------
+      # Checkout
+      # ------------------------------------------------------------
       - name: Checkout
         uses: actions/checkout@v4
         with:
@@ -23,10 +32,12 @@ jobs:
         run: |
           git submodule update --init --recursive --depth=1 --jobs=4
 
+      # ------------------------------------------------------------
+      # Dependencies
+      # ------------------------------------------------------------
       - name: Prepare environment
         run: |
           export DEBIAN_FRONTEND=noninteractive
-
           echo "man-db man-db/auto-update boolean false" | sudo debconf-set-selections
 
       - name: Install GCC 10 and build dependencies
@@ -63,17 +74,27 @@ jobs:
             gcc-10 \
             g++-10
 
+      # ------------------------------------------------------------
+      # GCC 10
+      # ------------------------------------------------------------
       - name: Configure GCC 10
         run: |
-          sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-10 100
-          sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-10 100
+          sudo update-alternatives --install \
+            /usr/bin/gcc gcc /usr/bin/gcc-10 100
+
+          sudo update-alternatives --install \
+            /usr/bin/g++ g++ /usr/bin/g++-10 100
 
           gcc --version
           g++ --version
 
+      # ------------------------------------------------------------
+      # CMake
+      # ------------------------------------------------------------
       - name: Install CMake 3.27.8
         run: |
-          wget -q https://github.com/Kitware/CMake/releases/download/v3.27.8/cmake-3.27.8-linux-x86_64.sh
+          wget -q \
+            https://github.com/Kitware/CMake/releases/download/v3.27.8/cmake-3.27.8-linux-x86_64.sh
 
           sudo sh cmake-3.27.8-linux-x86_64.sh \
             --skip-license \
@@ -81,6 +102,9 @@ jobs:
 
           cmake --version
 
+      # ------------------------------------------------------------
+      # Disable ZSTD in curl
+      # ------------------------------------------------------------
       - name: Patch curl to disable ZSTD
         run: |
           python3 - <<'PY'
@@ -93,21 +117,23 @@ jobs:
           new = "--without-zsh-functions-dir --without-fish-functions-dir --without-zstd"
 
           if "--without-zstd" in text:
-              print("ZSTD is already disabled in curl configuration.")
+              print("ZSTD is already disabled.")
           elif old in text:
               text = text.replace(old, new, 1)
               path.write_text(text)
-              print("Added --without-zstd to curl configuration.")
+              print("Added --without-zstd.")
           else:
               raise SystemExit(
-                  "Could not find the expected curl configuration line "
+                  "Could not find expected curl configuration line "
                   "in cmake/StaticBuild.cmake"
               )
           PY
 
-          echo "Checking curl ZSTD configuration:"
           grep -n -A3 -B3 "without-zstd" cmake/StaticBuild.cmake
 
+      # ------------------------------------------------------------
+      # Configure
+      # ------------------------------------------------------------
       - name: Configure build
         run: |
           rm -rf build
@@ -127,42 +153,118 @@ jobs:
             -DBUILD_TESTS=OFF \
             -DBUILD_STATIC_DEPS=ON
 
+      # ------------------------------------------------------------
+      # Build
+      # ------------------------------------------------------------
       - name: Build
         run: |
           cd build
           ninja -v
 
+      # ------------------------------------------------------------
+      # Check binary
+      # ------------------------------------------------------------
       - name: Check beldex-storage
         run: |
           ./build/httpserver/beldex-storage --version
 
+      # ------------------------------------------------------------
+      # Strip binaries
+      # ------------------------------------------------------------
       - name: Strip binaries
         run: |
           cd build
           ninja strip
 
+      # ------------------------------------------------------------
+      # Create package
+      # ------------------------------------------------------------
       - name: Create package
         run: |
           cd build
           ninja create_tarxz
 
-      - name: Upload build artifact to GitHub
+      # ------------------------------------------------------------
+      # Prepare deployment files
+      #
+      # This avoids using build/**/*.tar.xz with scp-action.
+      # Everything uploaded to EC2 will be inside deploy/.
+      # ------------------------------------------------------------
+      - name: Prepare deployment files
+        shell: bash
+        run: |
+          set -e
+
+          rm -rf deploy
+          mkdir -p deploy
+
+          # Copy the binary
+          cp build/httpserver/beldex-storage \
+             deploy/beldex-storage
+
+          # Find the package generated by ninja
+          PACKAGE=$(find build -type f -name "*.tar.xz" -print -quit)
+
+          if [ -z "$PACKAGE" ]; then
+            echo "ERROR: No .tar.xz package was generated."
+            echo "Files in build:"
+            find build -maxdepth 3 -type f | sort
+            exit 1
+          fi
+
+          echo "Found package:"
+          echo "$PACKAGE"
+
+          # Give the package a predictable name
+          cp "$PACKAGE" \
+             deploy/beldex-storage-linux-amd64.tar.xz
+
+          echo ""
+          echo "Files prepared for deployment:"
+          ls -lh deploy/
+
+      # ------------------------------------------------------------
+      # Upload build artifacts to GitHub
+      # ------------------------------------------------------------
+      - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
           name: beldex-storage-linux-amd64
-          path: |
-            build/**/*.tar.xz
-            build/httpserver/beldex-storage
+          path: deploy/
+          if-no-files-found: error
+          retention-days: 7
 
+      # ------------------------------------------------------------
+      # Upload build to EC2
+      #
+      # Skip deployment for pull requests.
+      # Deployment runs for:
+      #   - push to main
+      #   - push to master
+      #   - workflow_dispatch
+      # ------------------------------------------------------------
       - name: Upload build to EC2 server
+        if: github.event_name != 'pull_request'
         uses: appleboy/scp-action@v1
         with:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SERVER_SSH_KEY }}
           port: ${{ secrets.SERVER_PORT }}
-          source: |
-            build/**/*.tar.xz
-            build/httpserver/beldex-storage
-          target: /home/ubuntu/
+          source: "deploy/beldex-storage,deploy/beldex-storage-linux-amd64.tar.xz"
+          target: "/home/ubuntu/"
+
+      # ------------------------------------------------------------
+      # Deployment summary
+      # ------------------------------------------------------------
+      - name: Deployment complete
+        if: github.event_name != 'pull_request'
+        run: |
+          echo "=========================================="
+          echo "Deployment completed successfully"
+          echo "=========================================="
+          echo ""
+          echo "Uploaded to:"
+          echo "  /home/ubuntu/beldex-storage"
+          echo "  /home/ubuntu/beldex-storage-linux-amd64.tar.xz"
 
