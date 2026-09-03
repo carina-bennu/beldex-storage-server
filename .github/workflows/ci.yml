@@ -126,7 +126,9 @@ jobs:
                 pkg-config \
                 gcc-10 \
                 g++-10 \
-                python3
+                python3 \
+                tar \
+                xz-utils
 
 
               # ==================================================
@@ -152,9 +154,16 @@ jobs:
                 /usr/bin/g++-10 \
                 100
 
+              echo ""
+              echo "GCC:"
               gcc --version
+
+              echo ""
+              echo "G++:"
               g++ --version
 
+              echo ""
+              echo "Compiler paths:"
               which gcc
               which g++
 
@@ -189,43 +198,40 @@ jobs:
               echo "PATCH CURL"
               echo "================================================"
 
-              python3 - <<PY
-from pathlib import Path
+              CURL_FILE="/workspace/cmake/StaticBuild.cmake"
 
-path = Path("/workspace/cmake/StaticBuild.cmake")
+              if [ ! -f "$CURL_FILE" ]; then
+                echo "ERROR: $CURL_FILE not found"
+                exit 1
+              fi
 
-if not path.exists():
-    print("ERROR: cmake/StaticBuild.cmake not found")
-    raise SystemExit(1)
+              if grep -q -- "--without-zstd" "$CURL_FILE"; then
 
-text = path.read_text()
+                echo "ZSTD is already disabled."
 
-old = "--without-zsh-functions-dir --without-fish-functions-dir"
+              elif grep -q \
+                -- "--without-zsh-functions-dir --without-fish-functions-dir" \
+                "$CURL_FILE"; then
 
-new = (
-    "--without-zsh-functions-dir "
-    "--without-fish-functions-dir "
-    "--without-zstd"
-)
+                sed -i \
+                  "s|--without-zsh-functions-dir --without-fish-functions-dir|--without-zsh-functions-dir --without-fish-functions-dir --without-zstd|" \
+                  "$CURL_FILE"
 
-if "--without-zstd" in text:
-    print("ZSTD is already disabled.")
+                echo "Added --without-zstd."
 
-elif old in text:
-    text = text.replace(old, new, 1)
-    path.write_text(text)
-    print("Added --without-zstd.")
+              else
 
-else:
-    raise SystemExit(
-        "Could not find expected curl configuration line "
-        "in cmake/StaticBuild.cmake"
-    )
-PY
+                echo "ERROR: Could not find expected curl configuration line."
+                exit 1
+
+              fi
+
+              echo ""
+              echo "Curl configuration:"
 
               grep -n -A3 -B3 \
                 "without-zstd" \
-                /workspace/cmake/StaticBuild.cmake
+                "$CURL_FILE"
 
 
               # ==================================================
@@ -280,7 +286,8 @@ PY
               echo "FIND BUILD OUTPUTS"
               echo "================================================"
 
-              echo "All executable files:"
+              echo ""
+              echo "Executable files:"
 
               find /workspace/build \
                 -type f \
@@ -288,17 +295,12 @@ PY
                 -print \
                 | sort
 
-
               echo ""
-              echo "Files containing beldex-storage:"
+              echo "Files named beldex-storage:"
 
               find /workspace/build \
                 -type f \
-                \( \
-                  -name "beldex-storage" \
-                  -o \
-                  -name "*beldex*storage*" \
-                \) \
+                -name "beldex-storage" \
                 -print \
                 | sort
 
@@ -315,26 +317,39 @@ PY
               BINARY=$(find /workspace/build \
                 -type f \
                 -name "beldex-storage" \
-                -executable \
                 -print \
                 -quit)
 
               if [ -z "$BINARY" ]; then
 
                 echo ""
-                echo "ERROR: beldex-storage executable was not found."
+                echo "ERROR: beldex-storage binary was not found."
 
                 echo ""
-                echo "Build directory:"
+                echo "All build files:"
+
                 find /workspace/build \
-                  -maxdepth 4 \
+                  -maxdepth 5 \
                   -type f \
                   -print \
                   | sort
 
+                echo ""
+                echo "All executables:"
+
+                find /workspace/build \
+                  -type f \
+                  -executable \
+                  -print \
+                  | sort
+
                 exit 1
+
               fi
 
+              chmod +x "$BINARY"
+
+              echo ""
               echo "BINARY FOUND:"
               echo "$BINARY"
 
@@ -360,6 +375,7 @@ PY
               echo "CHECK BINARY DEPENDENCIES"
               echo "================================================"
 
+              echo ""
               echo "ldd output:"
 
               ldd "$BINARY" || true
@@ -410,6 +426,31 @@ PY
 
 
               # ==================================================
+              # SHOW BUILD OUTPUT
+              # ==================================================
+
+              echo ""
+              echo "================================================"
+              echo "BUILD OUTPUT"
+              echo "================================================"
+
+              echo ""
+              echo "Binary:"
+
+              ls -lh "$BINARY"
+
+              echo ""
+              echo "Packages:"
+
+              find /workspace/build \
+                -maxdepth 1 \
+                -type f \
+                -name "*.tar.xz" \
+                -print \
+                -exec ls -lh {} \;
+
+
+              # ==================================================
               # PREPARE DEPLOYMENT FILES
               # ==================================================
 
@@ -428,7 +469,7 @@ PY
               # ==================================================
 
               if [ ! -f "$BINARY" ]; then
-                echo "ERROR: Binary disappeared after build."
+                echo "ERROR: Binary not found."
                 exit 1
               fi
 
@@ -456,19 +497,21 @@ PY
                 echo "Build directory contents:"
 
                 find /workspace/build \
-                  -maxdepth 2 \
+                  -maxdepth 3 \
                   -type f \
                   | sort
 
                 exit 1
+
               fi
 
+              echo ""
               echo "Package found:"
               echo "$PACKAGE"
 
 
               # ==================================================
-              # COPY PACKAGE
+              # COPY PACKAGE WITH PREDICTABLE NAME
               # ==================================================
 
               cp \
@@ -503,7 +546,7 @@ PY
 
 
       # ============================================================
-      # VERIFY FILES
+      # VERIFY DEPLOYMENT FILES
       # ============================================================
 
       - name: Verify deployment files
@@ -530,7 +573,7 @@ PY
 
 
       # ============================================================
-      # GITHUB ARTIFACT
+      # UPLOAD ARTIFACT TO GITHUB
       # ============================================================
 
       - name: Upload build artifacts
@@ -543,30 +586,136 @@ PY
 
 
       # ============================================================
-      # UPLOAD TO SERVER
-      #
-      # Pull requests do not deploy.
-      # main/master/manual runs deploy.
+      # PREPARE SSH
+      # ============================================================
+
+      - name: Prepare SSH
+        if: github.event_name != 'pull_request'
+        shell: bash
+        env:
+          SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_PORT: ${{ secrets.SERVER_PORT }}
+        run: |
+          set -e
+
+          echo "================================================"
+          echo "PREPARE SSH"
+          echo "================================================"
+
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+
+          printf '%s\n' "$SERVER_SSH_KEY" > ~/.ssh/deploy_key
+
+          chmod 600 ~/.ssh/deploy_key
+
+          ssh-keyscan \
+            -p "$SERVER_PORT" \
+            -H "$SERVER_HOST" \
+            >> ~/.ssh/known_hosts
+
+          chmod 600 ~/.ssh/known_hosts
+
+          echo "SSH configuration prepared."
+
+
+      # ============================================================
+      # CREATE REMOTE DIRECTORY
+      # ============================================================
+
+      - name: Prepare server directory
+        if: github.event_name != 'pull_request'
+        shell: bash
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_PORT: ${{ secrets.SERVER_PORT }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+          SERVER_PATH: ${{ secrets.SERVER_PATH }}
+        run: |
+          set -e
+
+          echo "================================================"
+          echo "PREPARE SERVER DIRECTORY"
+          echo "================================================"
+
+          ssh \
+            -i ~/.ssh/deploy_key \
+            -p "$SERVER_PORT" \
+            "$SERVER_USER@$SERVER_HOST" \
+            "mkdir -p '$SERVER_PATH'"
+
+          echo "Remote directory ready."
+
+
+      # ============================================================
+      # UPLOAD BUILD FILES TO SERVER
       # ============================================================
 
       - name: Upload build to server
         if: github.event_name != 'pull_request'
-        uses: appleboy/scp-action@v1
-        with:
-          host: ${{ secrets.SERVER_HOST }}
-          username: ${{ secrets.SERVER_USER }}
-          key: ${{ secrets.SERVER_SSH_KEY }}
-          port: ${{ secrets.SERVER_PORT }}
+        shell: bash
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_PORT: ${{ secrets.SERVER_PORT }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+          SERVER_PATH: ${{ secrets.SERVER_PATH }}
+        run: |
+          set -e
 
-          source: "deploy/beldex-storage,deploy/beldex-storage-linux-amd64.tar.xz"
+          echo "================================================"
+          echo "UPLOAD BUILD FILES"
+          echo "================================================"
 
-          target: ${{ secrets.SERVER_PATH }}
+          echo ""
+          echo "Uploading beldex-storage..."
 
-          strip_components: 1
+          scp \
+            -i ~/.ssh/deploy_key \
+            -P "$SERVER_PORT" \
+            deploy/beldex-storage \
+            "$SERVER_USER@$SERVER_HOST:$SERVER_PATH/beldex-storage"
 
-          overwrite: true
+          echo ""
+          echo "Uploading package..."
 
-          command_timeout: 10m
+          scp \
+            -i ~/.ssh/deploy_key \
+            -P "$SERVER_PORT" \
+            deploy/beldex-storage-linux-amd64.tar.xz \
+            "$SERVER_USER@$SERVER_HOST:$SERVER_PATH/beldex-storage-linux-amd64.tar.xz"
+
+          echo ""
+          echo "Upload completed."
+
+
+      # ============================================================
+      # VERIFY REMOTE FILES
+      # ============================================================
+
+      - name: Verify remote deployment
+        if: github.event_name != 'pull_request'
+        shell: bash
+        env:
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_PORT: ${{ secrets.SERVER_PORT }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+          SERVER_PATH: ${{ secrets.SERVER_PATH }}
+        run: |
+          set -e
+
+          echo "================================================"
+          echo "VERIFY REMOTE DEPLOYMENT"
+          echo "================================================"
+
+          ssh \
+            -i ~/.ssh/deploy_key \
+            -p "$SERVER_PORT" \
+            "$SERVER_USER@$SERVER_HOST" \
+            "ls -lh '$SERVER_PATH/beldex-storage' '$SERVER_PATH/beldex-storage-linux-amd64.tar.xz'"
+
+          echo ""
+          echo "Remote deployment verified successfully."
 
 
       # ============================================================
@@ -582,15 +731,14 @@ PY
           echo "================================================"
 
           echo ""
-          echo "Server:"
-          echo "${{ secrets.SERVER_HOST }}"
+          echo "Build:"
+          echo "  Linux AMD64"
 
           echo ""
-          echo "Remote path:"
-          echo "${{ secrets.SERVER_PATH }}"
-
-          echo ""
-          echo "Uploaded:"
+          echo "Files:"
           echo "  beldex-storage"
           echo "  beldex-storage-linux-amd64.tar.xz"
+
+          echo ""
+          echo "The files were uploaded to the configured server."
 
