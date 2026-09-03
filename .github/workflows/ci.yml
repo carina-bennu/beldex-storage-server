@@ -441,7 +441,7 @@ jobs:
               fi
 
               echo "Package found:"
-              echo "$PACKAGE"
+              # echo "$PACKAGE"
 
 
               # --------------------------------------------------
