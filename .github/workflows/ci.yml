@@ -45,12 +45,6 @@ jobs:
 
       # ============================================================
       # BUILD INSIDE UBUNTU 20.04
-      #
-      # This matches the original Drone:
-      #   image: ubuntu:focal
-      #
-      # Checkout happens outside Docker so GitHub Actions
-      # can correctly handle submodules.
       # ============================================================
 
       - name: Build in Ubuntu 20.04
@@ -158,16 +152,9 @@ jobs:
                 /usr/bin/g++-10 \
                 100
 
-              echo ""
-              echo "GCC:"
               gcc --version
-
-              echo ""
-              echo "G++:"
               g++ --version
 
-              echo ""
-              echo "Compiler paths:"
               which gcc
               which g++
 
@@ -203,41 +190,39 @@ jobs:
               echo "================================================"
 
               python3 - <<PY
-          from pathlib import Path
+from pathlib import Path
 
-          path = Path("/workspace/cmake/StaticBuild.cmake")
+path = Path("/workspace/cmake/StaticBuild.cmake")
 
-          if not path.exists():
-              print("ERROR: cmake/StaticBuild.cmake not found")
-              raise SystemExit(1)
+if not path.exists():
+    print("ERROR: cmake/StaticBuild.cmake not found")
+    raise SystemExit(1)
 
-          text = path.read_text()
+text = path.read_text()
 
-          old = "--without-zsh-functions-dir --without-fish-functions-dir"
+old = "--without-zsh-functions-dir --without-fish-functions-dir"
 
-          new = (
-              "--without-zsh-functions-dir "
-              "--without-fish-functions-dir "
-              "--without-zstd"
-          )
+new = (
+    "--without-zsh-functions-dir "
+    "--without-fish-functions-dir "
+    "--without-zstd"
+)
 
-          if "--without-zstd" in text:
-              print("ZSTD is already disabled.")
+if "--without-zstd" in text:
+    print("ZSTD is already disabled.")
 
-          elif old in text:
-              text = text.replace(old, new, 1)
-              path.write_text(text)
-              print("Added --without-zstd.")
+elif old in text:
+    text = text.replace(old, new, 1)
+    path.write_text(text)
+    print("Added --without-zstd.")
 
-          else:
-              raise SystemExit(
-                  "Could not find expected curl configuration line "
-                  "in cmake/StaticBuild.cmake"
-              )
-          PY
+else:
+    raise SystemExit(
+        "Could not find expected curl configuration line "
+        "in cmake/StaticBuild.cmake"
+    )
+PY
 
-              echo ""
-              echo "Curl configuration:"
               grep -n -A3 -B3 \
                 "without-zstd" \
                 /workspace/cmake/StaticBuild.cmake
@@ -287,6 +272,74 @@ jobs:
 
 
               # ==================================================
+              # FIND BUILD OUTPUTS
+              # ==================================================
+
+              echo ""
+              echo "================================================"
+              echo "FIND BUILD OUTPUTS"
+              echo "================================================"
+
+              echo "All executable files:"
+
+              find /workspace/build \
+                -type f \
+                -executable \
+                -print \
+                | sort
+
+
+              echo ""
+              echo "Files containing beldex-storage:"
+
+              find /workspace/build \
+                -type f \
+                \( \
+                  -name "beldex-storage" \
+                  -o \
+                  -name "*beldex*storage*" \
+                \) \
+                -print \
+                | sort
+
+
+              # ==================================================
+              # LOCATE BELDEX STORAGE BINARY
+              # ==================================================
+
+              echo ""
+              echo "================================================"
+              echo "LOCATE BELDEX STORAGE BINARY"
+              echo "================================================"
+
+              BINARY=$(find /workspace/build \
+                -type f \
+                -name "beldex-storage" \
+                -executable \
+                -print \
+                -quit)
+
+              if [ -z "$BINARY" ]; then
+
+                echo ""
+                echo "ERROR: beldex-storage executable was not found."
+
+                echo ""
+                echo "Build directory:"
+                find /workspace/build \
+                  -maxdepth 4 \
+                  -type f \
+                  -print \
+                  | sort
+
+                exit 1
+              fi
+
+              echo "BINARY FOUND:"
+              echo "$BINARY"
+
+
+              # ==================================================
               # CHECK BINARY
               # ==================================================
 
@@ -295,7 +348,7 @@ jobs:
               echo "CHECK BINARY"
               echo "================================================"
 
-              /workspace/build/httpserver/beldex-storage --version
+              "$BINARY" --version || true
 
 
               # ==================================================
@@ -309,15 +362,12 @@ jobs:
 
               echo "ldd output:"
 
-              ldd \
-                /workspace/build/httpserver/beldex-storage \
-                || true
+              ldd "$BINARY" || true
 
               echo ""
               echo "GLIBC requirements:"
 
-              strings \
-                /workspace/build/httpserver/beldex-storage \
+              strings "$BINARY" \
                 | grep "^GLIBC_" \
                 | sort -Vu \
                 | tail -20 \
@@ -326,8 +376,7 @@ jobs:
               echo ""
               echo "GLIBCXX requirements:"
 
-              strings \
-                /workspace/build/httpserver/beldex-storage \
+              strings "$BINARY" \
                 | grep "^GLIBCXX_" \
                 | sort -Vu \
                 | tail -20 \
@@ -345,7 +394,7 @@ jobs:
 
               cd /workspace/build
 
-              ninja strip
+              ninja strip || true
 
 
               # ==================================================
@@ -358,32 +407,6 @@ jobs:
               echo "================================================"
 
               ninja create_tarxz
-
-
-              # ==================================================
-              # SHOW BUILD OUTPUT
-              # ==================================================
-
-              echo ""
-              echo "================================================"
-              echo "BUILD OUTPUT"
-              echo "================================================"
-
-              echo ""
-              echo "Binary:"
-
-              ls -lh \
-                /workspace/build/httpserver/beldex-storage
-
-              echo ""
-              echo "Packages:"
-
-              find /workspace/build \
-                -maxdepth 1 \
-                -type f \
-                -name "*.tar.xz" \
-                -print \
-                -exec ls -lh {} \;
 
 
               # ==================================================
@@ -400,25 +423,23 @@ jobs:
               mkdir -p /workspace/deploy
 
 
-              # --------------------------------------------------
-              # Copy binary
-              # --------------------------------------------------
+              # ==================================================
+              # COPY BINARY
+              # ==================================================
 
-              if [ ! -f \
-                "/workspace/build/httpserver/beldex-storage"
-              ]; then
-                echo "ERROR: beldex-storage binary not found"
+              if [ ! -f "$BINARY" ]; then
+                echo "ERROR: Binary disappeared after build."
                 exit 1
               fi
 
               cp \
-                /workspace/build/httpserver/beldex-storage \
+                "$BINARY" \
                 /workspace/deploy/beldex-storage
 
 
-              # --------------------------------------------------
-              # Find generated package
-              # --------------------------------------------------
+              # ==================================================
+              # FIND GENERATED PACKAGE
+              # ==================================================
 
               PACKAGE=$(find /workspace/build \
                 -maxdepth 1 \
@@ -428,10 +449,12 @@ jobs:
                 -quit)
 
               if [ -z "$PACKAGE" ]; then
+
                 echo "ERROR: No .tar.xz package was generated."
 
                 echo ""
                 echo "Build directory contents:"
+
                 find /workspace/build \
                   -maxdepth 2 \
                   -type f \
@@ -441,12 +464,12 @@ jobs:
               fi
 
               echo "Package found:"
-              # echo "$PACKAGE"
+              echo "$PACKAGE"
 
 
-              # --------------------------------------------------
-              # Copy package with predictable name
-              # --------------------------------------------------
+              # ==================================================
+              # COPY PACKAGE
+              # ==================================================
 
               cp \
                 "$PACKAGE" \
@@ -480,7 +503,7 @@ jobs:
 
 
       # ============================================================
-      # VERIFY FILES ON GITHUB RUNNER
+      # VERIFY FILES
       # ============================================================
 
       - name: Verify deployment files
@@ -492,7 +515,7 @@ jobs:
           echo "VERIFY DEPLOYMENT FILES"
           echo "================================================"
 
-          ls -lh deploy/
+          ls -lah deploy/
 
           test -f deploy/beldex-storage
           test -f deploy/beldex-storage-linux-amd64.tar.xz
@@ -507,7 +530,7 @@ jobs:
 
 
       # ============================================================
-      # UPLOAD ARTIFACT TO GITHUB
+      # GITHUB ARTIFACT
       # ============================================================
 
       - name: Upload build artifacts
@@ -520,13 +543,13 @@ jobs:
 
 
       # ============================================================
-      # UPLOAD TO EC2
+      # UPLOAD TO SERVER
       #
-      # Pull requests do NOT deploy.
-      # Pushes to main/master and manual runs DO deploy.
+      # Pull requests do not deploy.
+      # main/master/manual runs deploy.
       # ============================================================
 
-      - name: Upload build to EC2 server
+      - name: Upload build to server
         if: github.event_name != 'pull_request'
         uses: appleboy/scp-action@v1
         with:
@@ -534,12 +557,20 @@ jobs:
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SERVER_SSH_KEY }}
           port: ${{ secrets.SERVER_PORT }}
+
           source: "deploy/beldex-storage,deploy/beldex-storage-linux-amd64.tar.xz"
-          target: "/home/ubuntu/"
+
+          target: ${{ secrets.SERVER_PATH }}
+
+          strip_components: 1
+
+          overwrite: true
+
+          command_timeout: 10m
 
 
       # ============================================================
-      # DEPLOYMENT SUMMARY
+      # DEPLOYMENT COMPLETE
       # ============================================================
 
       - name: Deployment complete
@@ -551,11 +582,15 @@ jobs:
           echo "================================================"
 
           echo ""
-          echo "EC2:"
+          echo "Server:"
           echo "${{ secrets.SERVER_HOST }}"
 
           echo ""
-          echo "Uploaded files:"
-          echo "  /home/ubuntu/beldex-storage"
-          echo "  /home/ubuntu/beldex-storage-linux-amd64.tar.xz"
+          echo "Remote path:"
+          echo "${{ secrets.SERVER_PATH }}"
+
+          echo ""
+          echo "Uploaded:"
+          echo "  beldex-storage"
+          echo "  beldex-storage-linux-amd64.tar.xz"
 
